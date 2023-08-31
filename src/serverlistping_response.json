@@ -1,0 +1,13 @@
+{
+    "version": {
+        "name": "concrete",
+        "protocol": -1
+    },
+    "players": {
+        "max": 0,
+        "online": 0
+    },
+    "description": {
+        "text": "Unknown server. Check address and try again."
+    }
+}
