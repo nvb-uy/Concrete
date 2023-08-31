@@ -167,7 +167,7 @@ impl Handshake {
     }
 
     pub fn normalized_address(&self) -> Option<String> {
-        crate::unicode_madness::validate_and_normalize_domain(
+        crate::validation::validate_and_normalize_domain(
             if let Some(fml3_stripped) = self.server_address.strip_suffix("\0FML3\0") {
                 fml3_stripped
             } else if let Some(fml2_stripped) = self.server_address.strip_suffix("\0FML2\0") {

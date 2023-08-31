@@ -23,7 +23,7 @@ use crate::{
 mod netty;
 mod proto;
 mod routing;
-mod unicode_madness;
+mod validation;
 mod wordlist;
 
 fn any_private_keys(rd: &mut dyn std::io::BufRead) -> Result<Vec<Vec<u8>>, std::io::Error> {

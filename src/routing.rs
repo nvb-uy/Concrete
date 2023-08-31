@@ -57,10 +57,10 @@ impl RoutingTable {
         let mut lock = self.table.write();
         let mut domain = format!(
             "{}-{}.{}",
-            crate::wordlist::ID_WORDS
+            crate::wordlist::MINECRAFT_WORDS
                 .choose(&mut rand::thread_rng())
                 .unwrap(),
-            crate::wordlist::ID_WORDS
+            crate::wordlist::MINECRAFT_WORDS
                 .choose(&mut rand::thread_rng())
                 .unwrap(),
             self.base_domain
@@ -72,16 +72,16 @@ impl RoutingTable {
             );
             domain = format!(
                 "{}-{}.{}",
-                crate::wordlist::ID_WORDS
+                crate::wordlist::MINECRAFT_WORDS
                     .choose(&mut rand::thread_rng())
                     .unwrap(),
-                crate::wordlist::ID_WORDS
+                crate::wordlist::MINECRAFT_WORDS
                     .choose(&mut rand::thread_rng())
                     .unwrap(),
                 self.base_domain
             );
         }
-        domain = crate::unicode_madness::validate_and_normalize_domain(&domain)
+        domain = crate::validation::validate_and_normalize_domain(&domain)
             .expect("Resulting domain is not valid");
         let (send, recv) = mpsc::unbounded_channel();
         lock.insert(domain.clone(), send);
