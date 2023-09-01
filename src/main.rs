@@ -24,6 +24,7 @@ mod netty;
 mod proto;
 mod routing;
 mod validation;
+mod vars;
 mod wordlist;
 
 fn any_private_keys(rd: &mut dyn std::io::BufRead) -> Result<Vec<Vec<u8>>, std::io::Error> {
@@ -80,16 +81,14 @@ async fn create_server_config() -> anyhow::Result<ServerConfig> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    
+
     let endpoint = Box::leak(Box::new(Endpoint::server(
         create_server_config().await?,
-        std::env::var("QUICLIME_BIND_ADDR_QUIC")
-            .context("Reading QUICLIME_BIND_ADDR_QUIC")?
-            .parse()?,
+        crate::vars::QUICLIME_BIND_ADDR_QUIC.parse()?
     )?));
-    
+
     let routing_table = Box::leak(Box::new(routing::RoutingTable::new(
-        std::env::var("QUICLIME_BASE_DOMAIN").context("Reading QUICLIME_BASE_DOMAIN")?,
+        crate::vars::QUICLIME_BASE_DOMAIN.to_string()
     )));
     tokio::try_join!(
         listen_quic(endpoint, routing_table),
@@ -222,9 +221,7 @@ async fn listen_control(
             }),
         );
     axum::Server::bind(
-        &std::env::var("QUICLIME_BIND_ADDR_WEB")
-            .context("Reading QUICLIME_BIND_ADDR_WEB")?
-            .parse()?,
+        &crate::vars::QUICLIME_BIND_ADDR_WEB.parse()?
     )
     .serve(app.into_make_service())
     .await?;
@@ -300,9 +297,7 @@ async fn handle_minecraft(connection: TcpStream, routing_table: &'static Routing
 
 async fn listen_minecraft(routing_table: &'static RoutingTable) -> anyhow::Result<()> {
     let server = tokio::net::TcpListener::bind(
-        std::env::var("QUICLIME_BIND_ADDR_MC")
-            .context("Reading QUICLIME_BIND_ADDR_MC")?
-            .parse::<SocketAddr>()?,
+        crate::vars::QUICLIME_BIND_ADDR_MC.parse::<SocketAddr>()?
     )
     .await?;
     while let Ok((connection, _)) = server.accept().await {
