@@ -305,13 +305,15 @@ async fn listen_minecraft(routing_table: &'static RoutingTable, connections: &mu
     .await?;
     while let Ok((connection, _)) = server.accept().await {
         let peer = connection.peer_addr()?;
-        if connections.contains_key(&peer) && connections[&peer].elapsed() < Duration::from_secs(30) {
-            info!("Disallowing connection from {} (recently connected)", peer);
-            return Ok(());
+        
+        if connections.contains_key(&peer) {
+            if connections[&peer].elapsed() < Duration::from_secs(30) {
+                info!("Disallowing connection from {} (recently connected)", peer);
+                return Ok(());
+            }
         }
-        else {
-            connections.insert(peer, Instant::now());
-        }
+        
+        connections.insert(peer, Instant::now());
         tokio::spawn(handle_minecraft(connection, routing_table));
     }
     Ok(())
