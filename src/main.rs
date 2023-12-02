@@ -1,4 +1,5 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{time::Instant, collections::HashMap};
 
 use anyhow::Context;
 use axum::{
@@ -90,10 +91,12 @@ async fn main() -> anyhow::Result<()> {
     let routing_table = Box::leak(Box::new(routing::RoutingTable::new(
         crate::vars::QUICLIME_BASE_DOMAIN.to_string()
     )));
+
+    let mut connections: HashMap<SocketAddr, Instant> = HashMap::new(); 
     tokio::try_join!(
         listen_quic(endpoint, routing_table),
         listen_control(endpoint, routing_table),
-        listen_minecraft(routing_table)
+        listen_minecraft(routing_table, &mut connections)
     )?;
     Ok(())
 }
@@ -295,12 +298,22 @@ async fn handle_minecraft(connection: TcpStream, routing_table: &'static Routing
     };
 }
 
-async fn listen_minecraft(routing_table: &'static RoutingTable) -> anyhow::Result<()> {
+async fn listen_minecraft(routing_table: &'static RoutingTable, connections: &mut HashMap<SocketAddr, Instant>) -> anyhow::Result<()> {
     let server = tokio::net::TcpListener::bind(
         crate::vars::QUICLIME_BIND_ADDR_MC.parse::<SocketAddr>()?
     )
     .await?;
     while let Ok((connection, _)) = server.accept().await {
+        let peer = connection.peer_addr()?;
+        
+        if connections.contains_key(&peer) {
+            if connections[&peer].elapsed() < Duration::from_secs(30) {
+                info!("Disallowing connection from {} (recently connected)", peer);
+                return Ok(());
+            }
+        }
+        
+        connections.insert(peer, Instant::now());
         tokio::spawn(handle_minecraft(connection, routing_table));
     }
     Ok(())
