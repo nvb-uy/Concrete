@@ -85,11 +85,11 @@ async fn main() -> anyhow::Result<()> {
 
     let endpoint = Box::leak(Box::new(Endpoint::server(
         create_server_config().await?,
-        crate::vars::QUICLIME_BIND_ADDR_QUIC.parse()?
+        vars::QUICLIME_BIND_ADDR_QUIC.parse()?
     )?));
 
     let routing_table = Box::leak(Box::new(routing::RoutingTable::new(
-        crate::vars::QUICLIME_BASE_DOMAIN.to_string()
+        vars::QUICLIME_BASE_DOMAIN.to_string()
     )));
 
     let mut connections: HashMap<SocketAddr, Instant> = HashMap::new(); 
@@ -224,7 +224,7 @@ async fn listen_control(
             }),
         );
     axum::Server::bind(
-        &crate::vars::QUICLIME_BIND_ADDR_WEB.parse()?
+        &vars::QUICLIME_BIND_ADDR_WEB.parse()?
     )
     .serve(app.into_make_service())
     .await?;
@@ -300,12 +300,12 @@ async fn handle_minecraft(connection: TcpStream, routing_table: &'static Routing
 
 async fn listen_minecraft(routing_table: &'static RoutingTable, connections: &mut HashMap<SocketAddr, Instant>) -> anyhow::Result<()> {
     let server = tokio::net::TcpListener::bind(
-        crate::vars::QUICLIME_BIND_ADDR_MC.parse::<SocketAddr>()?
+        vars::QUICLIME_BIND_ADDR_MC.parse::<SocketAddr>()?
     )
     .await?;
     while let Ok((connection, _)) = server.accept().await {
         let peer = connection.peer_addr()?;
-        
+
         if connections.contains_key(&peer) {
             if connections[&peer].elapsed() < Duration::from_secs(30) {
                 info!("Disallowing connection from {} (recently connected)", peer);
@@ -313,6 +313,7 @@ async fn listen_minecraft(routing_table: &'static RoutingTable, connections: &mu
             }
         }
         
+        info!("Tracking connection from {}", peer);
         connections.insert(peer, Instant::now());
         tokio::spawn(handle_minecraft(connection, routing_table));
     }
