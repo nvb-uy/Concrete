@@ -1,13 +1,16 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use std::{time::Instant, collections::HashMap};
+#![warn(clippy::pedantic)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_wrap)]
 
-use anyhow::Context;
+use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+
+use anyhow::{anyhow, Context};
 use axum::{
     http::StatusCode,
     routing::{get, post},
 };
 use log::{error, info};
-use netty::{Handshake, NettyReadError};
+use netty::{Handshake, ReadError};
 use quinn::{Connecting, ConnectionError, Endpoint, ServerConfig, TransportConfig};
 use routing::RoutingTable;
 use rustls::{Certificate, PrivateKey};
@@ -17,15 +20,14 @@ use tokio::{
 };
 
 use crate::{
-    netty::WriteExtNetty,
+    netty::{ReadExt, WriteExt},
     proto::{ClientboundControlMessage, ServerboundControlMessage},
 };
 
 mod netty;
 mod proto;
 mod routing;
-mod validation;
-mod vars;
+mod unicode_madness;
 mod wordlist;
 
 fn any_private_keys(rd: &mut dyn std::io::BufRead) -> Result<Vec<Vec<u8>>, std::io::Error> {
@@ -34,9 +36,11 @@ fn any_private_keys(rd: &mut dyn std::io::BufRead) -> Result<Vec<Vec<u8>>, std::
     loop {
         match rustls_pemfile::read_one(rd)? {
             None => return Ok(keys),
-            Some(rustls_pemfile::Item::ECKey(key)) => keys.push(key),
-            Some(rustls_pemfile::Item::PKCS8Key(key)) => keys.push(key),
-            Some(rustls_pemfile::Item::RSAKey(key)) => keys.push(key),
+            Some(
+                rustls_pemfile::Item::RSAKey(key)
+                | rustls_pemfile::Item::PKCS8Key(key)
+                | rustls_pemfile::Item::ECKey(key),
+            ) => keys.push(key),
             _ => {}
         };
     }
@@ -82,21 +86,22 @@ async fn create_server_config() -> anyhow::Result<ServerConfig> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-
+    // JUSTIFICATION: this lives until the end of the entire program
     let endpoint = Box::leak(Box::new(Endpoint::server(
         create_server_config().await?,
-        crate::vars::QUICLIME_BIND_ADDR_QUIC.parse()?
+        std::env::var("QUICLIME_BIND_ADDR_QUIC")
+            .context("Reading QUICLIME_BIND_ADDR_QUIC")?
+            .parse()?,
     )?));
-
+    // JUSTIFICATION: this lives until the end of the entire program
     let routing_table = Box::leak(Box::new(routing::RoutingTable::new(
-        crate::vars::QUICLIME_BASE_DOMAIN.to_string()
+        std::env::var("QUICLIME_BASE_DOMAIN").context("Reading QUICLIME_BASE_DOMAIN")?,
     )));
-
-    let mut connections: HashMap<SocketAddr, Instant> = HashMap::new(); 
+    #[allow(unreachable_code)]
     tokio::try_join!(
         listen_quic(endpoint, routing_table),
         listen_control(endpoint, routing_table),
-        listen_minecraft(routing_table, &mut connections)
+        listen_minecraft(routing_table)
     )?;
     Ok(())
 }
@@ -118,7 +123,7 @@ async fn try_handle_quic(
         if let Ok(parsed) = serde_json::from_slice(&buf) {
             match parsed {
                 ServerboundControlMessage::RequestDomainAssignment => {
-                    let handle = routing_table.register().await;
+                    let handle = routing_table.register();
                     info!(
                         "Domain assigned to {}: {}",
                         connection.remote_address(),
@@ -133,19 +138,19 @@ async fn try_handle_quic(
                     break handle;
                 }
             }
-        } else {
-            let response = serde_json::to_vec(&ClientboundControlMessage::UnknownMessage)?;
-            send_control.write_all(&[response.len() as u8]).await?;
-            send_control.write_all(&response).await?;
         }
+        let response = serde_json::to_vec(&ClientboundControlMessage::UnknownMessage)?;
+        send_control.write_all(&[response.len() as u8]).await?;
+        send_control.write_all(&response).await?;
     };
+
     tokio::select! {
         e = connection.closed() => {
             match e {
-                ConnectionError::ConnectionClosed(_) => Ok(()),
-                ConnectionError::ApplicationClosed(_) => Ok(()),
-                ConnectionError::LocallyClosed => Ok(()),
-                e => Err(e.into())
+                ConnectionError::ConnectionClosed(_)
+                | ConnectionError::ApplicationClosed(_)
+                | ConnectionError::LocallyClosed => Ok(()),
+                e => Err(e.into()),
             }
         },
         r = async {
@@ -185,17 +190,17 @@ async fn handle_quic(connection: Connecting, routing_table: &RoutingTable) {
 async fn listen_quic(
     endpoint: &'static Endpoint,
     routing_table: &'static RoutingTable,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Infallible> {
     while let Some(connection) = endpoint.accept().await {
         tokio::spawn(handle_quic(connection, routing_table));
     }
-    Ok(())
+    Err(anyhow!("quiclime endpoint closed"))
 }
 
 async fn listen_control(
     endpoint: &'static Endpoint,
     routing_table: &'static RoutingTable,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Infallible> {
     let app = axum::Router::new()
         .route(
             "/metrics",
@@ -209,7 +214,7 @@ async fn listen_control(
                         endpoint.set_server_config(Some(config));
                         (StatusCode::OK, "Success".to_string())
                     }
-                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
                 }
             }),
         )
@@ -220,15 +225,17 @@ async fn listen_control(
         .route(
             "/stop",
             post(|| async {
-                endpoint.close(0u32.into(), b"concrete closing");
+                endpoint.close(0u32.into(), b"e4mc closing");
             }),
         );
     axum::Server::bind(
-        &crate::vars::QUICLIME_BIND_ADDR_WEB.parse()?
+        &std::env::var("QUICLIME_BIND_ADDR_WEB")
+            .context("Reading QUICLIME_BIND_ADDR_WEB")?
+            .parse()?,
     )
     .serve(app.into_make_service())
     .await?;
-    Ok(())
+    Err(anyhow!("control endpoint closed"))
 }
 
 async fn try_handle_minecraft(
@@ -238,20 +245,18 @@ async fn try_handle_minecraft(
     let peer = connection.peer_addr()?;
     info!("Minecraft client connected from: {}", peer);
     let handshake = netty::read_packet(&mut connection).await;
-    if let Err(NettyReadError::LegacyServerListPing) = handshake {
+    if let Err(ReadError::LegacyServerListPing) = handshake {
         connection
             .write_all(include_bytes!("legacy_serverlistping_response.bin"))
             .await?;
         return Ok(());
     }
     let handshake = Handshake::new(&handshake?)?;
-    let address = match handshake.normalized_address() {
-        Some(addr) => addr,
-        None => return politely_disconnect(connection, handshake).await,
+    let Some(address) = handshake.normalized_address() else {
+        return politely_disconnect(connection, handshake).await;
     };
-    let (mut send_host, mut recv_host) = match routing_table.route(&address).await {
-        Some(pair) => pair,
-        None => return politely_disconnect(connection, handshake).await,
+    let Some((mut send_host, mut recv_host)) = routing_table.route(&address).await else {
+        return politely_disconnect(connection, handshake).await;
     };
     handshake.send(&mut send_host).await?;
     let (mut recv_client, mut send_client) = connection.split();
@@ -272,10 +277,34 @@ async fn politely_disconnect(
 ) -> anyhow::Result<()> {
     match handshake.next_state {
         netty::HandshakeType::Status => {
+            let packet = netty::read_packet(&mut connection).await?;
+            let mut packet = packet.as_slice();
+            let id = packet.read_varint()?;
+            if id != 0 {
+                return Err(anyhow!(
+                    "Packet isn't a Status Request(0x00), but {:#04x}",
+                    id
+                ));
+            }
             let mut buf = vec![];
             buf.write_varint(0).await?;
             buf.write_string(include_str!("./serverlistping_response.json"))
                 .await?;
+            connection.write_varint(buf.len() as i32).await?;
+            connection.write_all(&buf).await?;
+            let packet = netty::read_packet(&mut connection).await?;
+            let mut packet = packet.as_slice();
+            let id = packet.read_varint()?;
+            if id != 1 {
+                return Err(anyhow!(
+                    "Packet isn't a Ping Request(0x01), but {:#04x}",
+                    id
+                ));
+            }
+            let payload = packet.read_long()?;
+            let mut buf = Vec::with_capacity(1 + 8);
+            buf.write_varint(1).await?;
+            buf.write_u64(payload).await?;
             connection.write_varint(buf.len() as i32).await?;
             connection.write_all(&buf).await?;
         }
@@ -298,23 +327,21 @@ async fn handle_minecraft(connection: TcpStream, routing_table: &'static Routing
     };
 }
 
-async fn listen_minecraft(routing_table: &'static RoutingTable, connections: &mut HashMap<SocketAddr, Instant>) -> anyhow::Result<()> {
+async fn listen_minecraft(routing_table: &'static RoutingTable) -> anyhow::Result<Infallible> {
     let server = tokio::net::TcpListener::bind(
-        crate::vars::QUICLIME_BIND_ADDR_MC.parse::<SocketAddr>()?
+        std::env::var("QUICLIME_BIND_ADDR_MC")
+            .context("Reading QUICLIME_BIND_ADDR_MC")?
+            .parse::<SocketAddr>()?,
     )
     .await?;
-    while let Ok((connection, _)) = server.accept().await {
-        let peer = connection.peer_addr()?;
-        
-        if connections.contains_key(&peer) {
-            if connections[&peer].elapsed() < Duration::from_secs(30) {
-                info!("Disallowing connection from {} (recently connected)", peer);
-                return Ok(());
+    loop {
+        match server.accept().await {
+            Ok((connection, _)) => {
+                tokio::spawn(handle_minecraft(connection, routing_table));
+            }
+            Err(e) => {
+                error!("Error accepting minecraft connection: {}", e);
             }
         }
-        
-        connections.insert(peer, Instant::now());
-        tokio::spawn(handle_minecraft(connection, routing_table));
     }
-    Ok(())
 }

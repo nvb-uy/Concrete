@@ -1,3 +1,5 @@
+#![allow(clippy::cast_sign_loss)]
+
 use std::io::Read;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,50 +9,56 @@ use log::error;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum NettyReadError {
+pub enum ReadError {
     #[error("{0}")]
     IoError(std::io::Error),
     #[error("Was not a netty packet, but a Legacy ServerListPing")]
     LegacyServerListPing,
 }
 
-impl From<std::io::Error> for NettyReadError {
+impl From<std::io::Error> for ReadError {
     fn from(value: std::io::Error) -> Self {
         Self::IoError(value)
     }
 }
 
-impl From<std::io::ErrorKind> for NettyReadError {
+impl From<std::io::ErrorKind> for ReadError {
     fn from(value: std::io::ErrorKind) -> Self {
         Self::IoError(value.into())
     }
 }
 
-pub trait ReadExtNetty: Read {
-    fn read_u8(&mut self) -> Result<u8, NettyReadError> {
+pub trait ReadExt: Read {
+    fn read_u8(&mut self) -> Result<u8, ReadError> {
         let mut buf = [0u8];
         self.read_exact(&mut buf)?;
         Ok(buf[0])
     }
 
-    fn read_u16(&mut self) -> Result<u16, NettyReadError> {
+    fn read_u16(&mut self) -> Result<u16, ReadError> {
         let mut buf = [0u8; 2];
         self.read_exact(&mut buf)?;
         Ok(u16::from_be_bytes(buf))
     }
 
-    fn read_string(&mut self) -> Result<String, NettyReadError> {
+    fn read_long(&mut self) -> Result<u64, ReadError> {
+        let mut buf = [0u8; 8];
+        self.read_exact(&mut buf)?;
+        Ok(u64::from_be_bytes(buf))
+    }
+
+    fn read_string(&mut self) -> Result<String, ReadError> {
         let len = self.read_varint()?;
         let mut buf = vec![0u8; len as usize];
         self.read_exact(&mut buf)?;
         String::from_utf8(buf).map_err(|_| std::io::ErrorKind::InvalidData.into())
     }
 
-    fn read_varint(&mut self) -> Result<i32, NettyReadError> {
+    fn read_varint(&mut self) -> Result<i32, ReadError> {
         let mut res = 0i32;
         for i in 0..5 {
             let part = self.read_u8()?;
-            res |= (part as i32 & 0x7F) << (7 * i);
+            res |= (i32::from(part) & 0x7F) << (7 * i);
             if part & 0x80 == 0 {
                 return Ok(res);
             }
@@ -58,16 +66,35 @@ pub trait ReadExtNetty: Read {
         error!("Varint is invalid");
         Err(std::io::ErrorKind::InvalidData.into())
     }
+
+    // fn read_packet_compressed(&mut self) -> Result<Vec<u8>, NettyReadError> {
+    //     let len = self.read_varint()?;
+    //     let len_decompressed = self.read_varint()?;
+    //     let mut buf = vec![0u8; len as usize];
+    //     self.read_exact(&mut buf)?;
+    //     if len_decompressed == 0 {
+    //         return Ok(buf);
+    //     }
+    //     let mut buf_decompressed = vec![0u8; len_decompressed as usize];
+    //     if flate2::Decompress::new(true)
+    //         .decompress(&buf, &mut buf_decompressed, flate2::FlushDecompress::Finish)
+    //         .is_err()
+    //     {
+    //         return Err(std::io::ErrorKind::InvalidData.into());
+    //     };
+    //     Ok(buf_decompressed)
+    // }
 }
 
-pub async fn read_packet(mut reader: impl AsyncReadExt + Unpin) -> Result<Vec<u8>, NettyReadError> {
+pub async fn read_packet(mut reader: impl AsyncReadExt + Unpin) -> Result<Vec<u8>, ReadError> {
     let len = read_varint(&mut reader).await?;
     let mut buf = vec![0u8; len as usize];
     if len == 254 {
         let mut temp = [0u8];
         reader.read_exact(&mut temp).await?;
         if temp[0] == 0xFA {
-            return Err(NettyReadError::LegacyServerListPing);
+            // FE 01 FA: Legacy ServerListPing
+            return Err(ReadError::LegacyServerListPing);
         }
         buf[0] = temp[0];
         reader.read_exact(&mut buf[1..]).await?;
@@ -77,11 +104,11 @@ pub async fn read_packet(mut reader: impl AsyncReadExt + Unpin) -> Result<Vec<u8
     Ok(buf)
 }
 
-async fn read_varint(mut reader: impl AsyncReadExt + Unpin) -> Result<i32, NettyReadError> {
+async fn read_varint(mut reader: impl AsyncReadExt + Unpin) -> Result<i32, ReadError> {
     let mut res = 0i32;
     for i in 0..5 {
         let part = reader.read_u8().await?;
-        res |= (part as i32 & 0x7F) << (7 * i);
+        res |= (i32::from(part) & 0x7F) << (7 * i);
         if part & 0x80 == 0 {
             return Ok(res);
         }
@@ -90,10 +117,10 @@ async fn read_varint(mut reader: impl AsyncReadExt + Unpin) -> Result<i32, Netty
     Err(std::io::ErrorKind::InvalidData.into())
 }
 
-impl<T: Read> ReadExtNetty for T {}
+impl<T: Read> ReadExt for T {}
 
 #[async_trait]
-pub trait WriteExtNetty: AsyncWriteExt + Unpin {
+pub trait WriteExt: AsyncWriteExt + Unpin {
     async fn write_varint(&mut self, mut val: i32) -> std::io::Result<()> {
         for _ in 0..5 {
             if val & !0x7F == 0 {
@@ -136,7 +163,7 @@ impl Handshake {
         } else {
             let protocol_version = packet.read_varint()?;
             let server_address = packet.read_string()?;
-            let server_port = ReadExtNetty::read_u16(&mut packet)?;
+            let server_port = ReadExt::read_u16(&mut packet)?;
             let next_state = match packet.read_varint()? {
                 1 => HandshakeType::Status,
                 2 => HandshakeType::Login,
@@ -167,7 +194,8 @@ impl Handshake {
     }
 
     pub fn normalized_address(&self) -> Option<String> {
-        crate::validation::validate_and_normalize_domain(
+        crate::unicode_madness::validate_and_normalize_domain(
+            // yes, Forge has three different suffixes that they attach to the server address
             if let Some(fml3_stripped) = self.server_address.strip_suffix("\0FML3\0") {
                 fml3_stripped
             } else if let Some(fml2_stripped) = self.server_address.strip_suffix("\0FML2\0") {
@@ -181,4 +209,4 @@ impl Handshake {
     }
 }
 
-impl<T: AsyncWriteExt + Unpin> WriteExtNetty for T {}
+impl<T: AsyncWriteExt + Unpin> WriteExt for T {}

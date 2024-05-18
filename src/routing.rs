@@ -17,6 +17,7 @@ pub enum RouterRequest {
 type RouterCallback = oneshot::Sender<(SendStream, RecvStream)>;
 type RouteRequestReceiver = mpsc::UnboundedSender<RouterRequest>;
 
+#[allow(clippy::module_name_repetitions)]
 #[derive(Default)]
 pub struct RoutingTable {
     table: RwLock<HashMap<String, RouteRequestReceiver>>,
@@ -26,7 +27,7 @@ pub struct RoutingTable {
 impl RoutingTable {
     pub fn new(base_domain: String) -> Self {
         RoutingTable {
-            table: Default::default(),
+            table: RwLock::default(),
             base_domain,
         }
     }
@@ -53,14 +54,14 @@ impl RoutingTable {
         recv.await.ok()
     }
 
-    pub async fn register(&self) -> RoutingHandle {
+    pub fn register(&self) -> RoutingHandle {
         let mut lock = self.table.write();
         let mut domain = format!(
             "{}-{}.{}",
-            crate::wordlist::MINECRAFT_WORDS
+            crate::wordlist::ID_WORDS
                 .choose(&mut rand::thread_rng())
                 .unwrap(),
-            crate::wordlist::MINECRAFT_WORDS
+            crate::wordlist::ID_WORDS
                 .choose(&mut rand::thread_rng())
                 .unwrap(),
             self.base_domain
@@ -72,16 +73,16 @@ impl RoutingTable {
             );
             domain = format!(
                 "{}-{}.{}",
-                crate::wordlist::MINECRAFT_WORDS
+                crate::wordlist::ID_WORDS
                     .choose(&mut rand::thread_rng())
                     .unwrap(),
-                crate::wordlist::MINECRAFT_WORDS
+                crate::wordlist::ID_WORDS
                     .choose(&mut rand::thread_rng())
                     .unwrap(),
                 self.base_domain
             );
         }
-        domain = crate::validation::validate_and_normalize_domain(&domain)
+        domain = crate::unicode_madness::validate_and_normalize_domain(&domain)
             .expect("Resulting domain is not valid");
         let (send, recv) = mpsc::unbounded_channel();
         lock.insert(domain.clone(), send);
@@ -93,6 +94,7 @@ impl RoutingTable {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub struct RoutingHandle<'a> {
     recv: mpsc::UnboundedReceiver<RouterRequest>,
     domain: String,

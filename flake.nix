@@ -28,7 +28,9 @@
           path = ./.;
         };
 
-        cargoSha256 = "sha256-pc3uVPimdjygDHEludRByy7mbXJr//rCf7OfrsW+hDk=";
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+        };
       };
   in rec {
     packages = forAllSystems (s: let
@@ -125,6 +127,7 @@
               Group = cfg.group;
               ExecStart =
                 "${cfg.package}/bin/quiclime";
+              Restart = "on-failure";
             };
 
             environment = {

@@ -1,4 +1,4 @@
-pub const MINECRAFT_WORDS: [&str; 201] = [
+pub const ID_WORDS: [&str; 201] = [
     "axe", "pick", "craft", "mine", "build",  "stone", "ore", "wood", "tree", "dirt",
     "sand", "grass", "water", "lava", "cave", "torch", "fire", "bow", "arrow", "sword", "mob",
     "cow", "sheep", "pig", "chicken", "wolf", "zombie", "creeper", "enderman", "skeleton", "spider",
